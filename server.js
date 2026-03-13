@@ -1,51 +1,61 @@
 // ==============================
-// server.js — Express HTTP Server
+// server.js — Express REST API Server
 // ==============================
 
 const express = require('express');
-const path = require('path');
+const path    = require('path');
 
-const app = express();
-
-// อ่าน PORT จาก environment variable ถ้าไม่มีให้ใช้ 3000
+const app  = express();
 const PORT = process.env.PORT || 3000;
 
-// Middleware: แปลง JSON body จาก request เป็น JavaScript object
-app.use(express.json());
+// ===== Middleware =====
+app.use(express.json());                                      // parse JSON body
+app.use(express.static(path.join(__dirname, 'public')));      // serve static files
 
-// Middleware: Serve static files (HTML, CSS, JS) จากโฟลเดอร์ /public
-app.use(express.static(path.join(__dirname, 'public')));
-
-// ==============================
-// In-memory data store
-// เก็บ todos ไว้ใน array (ข้อมูลจะหายเมื่อ restart server)
-// ==============================
-let todos = [];
-let nextId = 1; // ใช้เป็น auto-increment ID
+// ===== In-memory Store =====
+let todos  = [];
+let nextId = 1;
 
 // ==============================
-// REST API Routes
+// Helper: หา todo ด้วย id แล้วคืนค่า { todo, index }
+// ถ้าไม่เจอ ส่ง 404 ทันที
 // ==============================
+function findTodo(id, res) {
+  const index = todos.findIndex((t) => t.id === id);
+  if (index === -1) {
+    res.status(404).json({ error: `Todo id ${id} not found` });
+    return null;
+  }
+  return { todo: todos[index], index };
+}
 
-// GET /api/todos — ดึง todo ทั้งหมด
+// ==============================
+// GET /api/todos
+// ดึง todo ทั้งหมด
+// Response: Todo[]
+// ==============================
 app.get('/api/todos', (req, res) => {
   res.json(todos);
 });
 
-// POST /api/todos — สร้าง todo ใหม่
-// Body: { "text": "Buy groceries" }
+// ==============================
+// POST /api/todos
+// เพิ่ม todo ใหม่
+// Body:     { "text": "..." }
+// Response: Todo (201 Created)
+// ==============================
 app.post('/api/todos', (req, res) => {
   const { text } = req.body;
 
-  // ตรวจสอบว่ามี text ส่งมาหรือไม่
-  if (!text || text.trim() === '') {
-    return res.status(400).json({ error: 'Todo text is required' });
+  // Validate
+  if (!text || typeof text !== 'string' || text.trim() === '') {
+    return res.status(400).json({ error: 'Field "text" is required and must be a non-empty string' });
   }
 
   const todo = {
-    id: nextId++,
-    text: text.trim(),
-    completed: false,
+    id:        nextId++,
+    text:      text.trim(),
+    done:      false,
     createdAt: new Date().toISOString(),
   };
 
@@ -53,51 +63,66 @@ app.post('/api/todos', (req, res) => {
   res.status(201).json(todo);
 });
 
-// PATCH /api/todos/:id — อัปเดตสถานะ completed ของ todo
-// Body: { "completed": true }
-app.patch('/api/todos/:id', (req, res) => {
-  const id = parseInt(req.params.id, 10);
-  const todo = todos.find((t) => t.id === id);
+// ==============================
+// PUT /api/todos/:id
+// Toggle done ↔ undone
+// Response: Todo (updated)
+// ==============================
+app.put('/api/todos/:id', (req, res) => {
+  const id     = parseInt(req.params.id, 10);
 
-  if (!todo) {
-    return res.status(404).json({ error: 'Todo not found' });
+  // ตรวจ id ว่าเป็นตัวเลขจริงหรือเปล่า
+  if (isNaN(id)) {
+    return res.status(400).json({ error: 'Invalid id — must be a number' });
   }
 
-  // อัปเดตเฉพาะ field ที่ส่งมา
-  if (typeof req.body.completed === 'boolean') {
-    todo.completed = req.body.completed;
-  }
-  if (req.body.text && req.body.text.trim() !== '') {
-    todo.text = req.body.text.trim();
-  }
+  const result = findTodo(id, res);
+  if (!result) return; // findTodo ส่ง 404 ไปแล้ว
 
-  res.json(todo);
+  // Toggle สถานะ done
+  result.todo.done = !result.todo.done;
+  res.json(result.todo);
 });
 
-// DELETE /api/todos/:id — ลบ todo ตาม id
+// ==============================
+// DELETE /api/todos/:id
+// ลบ todo ตาม id
+// Response: { message, deleted } (200 OK)
+// ==============================
 app.delete('/api/todos/:id', (req, res) => {
   const id = parseInt(req.params.id, 10);
-  const index = todos.findIndex((t) => t.id === id);
 
-  if (index === -1) {
-    return res.status(404).json({ error: 'Todo not found' });
+  if (isNaN(id)) {
+    return res.status(400).json({ error: 'Invalid id — must be a number' });
   }
 
-  todos.splice(index, 1);
-  res.status(204).send(); // 204 No Content
+  const result = findTodo(id, res);
+  if (!result) return;
+
+  const [deleted] = todos.splice(result.index, 1);
+  res.json({ message: 'Todo deleted', deleted });
 });
 
 // ==============================
-// Fallback: ส่ง index.html สำหรับทุก route ที่ไม่ใช่ API
-// (รองรับ Single Page App)
+// Global Error Handler
+// รับ error ที่หลุดจาก route ทั้งหมด
 // ==============================
+app.use((err, req, res, next) => {
+  console.error('[Error]', err.message);
+  res.status(500).json({ error: 'Internal server error' });
+});
+
+// ===== Fallback → index.html (SPA) =====
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// ==============================
-// Start Server
-// ==============================
+// ===== Start =====
 app.listen(PORT, () => {
-  console.log(`Server is running at http://localhost:${PORT}`);
+  console.log(`Server running → http://localhost:${PORT}`);
+  console.log('Endpoints:');
+  console.log('  GET    /api/todos');
+  console.log('  POST   /api/todos');
+  console.log('  PUT    /api/todos/:id');
+  console.log('  DELETE /api/todos/:id');
 });
